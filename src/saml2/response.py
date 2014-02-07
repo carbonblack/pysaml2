@@ -371,21 +371,17 @@ class StatusResponse(object):
                 self.in_response_to, self.request_id))
             return None
 
-        try:
-            assert self.response.version == "2.0"
-        except AssertionError:
-            _ver = float(self.response.version)
-            if _ver < 2.0:
-                raise RequestVersionTooLow()
-            else:
-                raise RequestVersionTooHigh()
+        _ver = float(self.response.version)
+        if _ver < 2.0:
+            raise RequestVersionTooLow()
+        elif _ver > 2.0:
+            raise RequestVersionTooHigh()
 
-        if self.asynchop:
-            if self.response.destination and \
-                    self.response.destination not in self.return_addrs:
-                logger.error("%s not in %s" % (self.response.destination,
+        if self.asynchop and self.response.destination and \
+                self.response.destination not in self.return_addrs:
+            logger.error("%s not in %s" % (self.response.destination,
                                            self.return_addrs))
-                return None
+            return None
             
         assert self.issue_instant_ok()
         assert self.status_ok()
@@ -597,7 +593,7 @@ class AuthnResponse(StatusResponse):
 
         """
         if not self.assertion.attribute_statement:
-            logger.error("Missing Attribute Statement")
+            logger.debug("Missing Attribute Statement")
             ava = {}
         else:
             assert len(self.assertion.attribute_statement) == 1
@@ -780,10 +776,8 @@ class AuthnResponse(StatusResponse):
         """ Verify that the assertion is syntactically correct and
         the signature is correct if present."""
         
-        try:
-            self._verify()
-        except AssertionError:
-            raise
+        if not self._verify():
+            return None
 
         if not isinstance(self.response, samlp.Response):
             return self
