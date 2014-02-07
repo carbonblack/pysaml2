@@ -62,7 +62,7 @@ if sys.version_info < (2, 7):
     install_requires.append('importlib')
 
 setup(
-    name='pysaml2',
+    name='python-cb-pysaml2',
     version='1.1.1',
     description='Python implementation of SAML Version 2 to be used in a WSGI environment',
     # long_description = read("README"),
