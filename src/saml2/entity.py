@@ -799,7 +799,7 @@ class Entity(HTTPBase):
             try:
                 response = response.loads(xmlstr, False)
             except SigverError, err:
-                logger.error("Signature Error: %s" % err)
+                logger.exception("Signature Error: %s" % err)
                 return None
             except Exception, err:
                 if "not well-formed" in "%s" % err:
