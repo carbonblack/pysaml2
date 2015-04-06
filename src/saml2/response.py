@@ -635,12 +635,6 @@ class AuthnResponse(StatusResponse):
         """ The assertion can contain zero or one attributeStatements
 
         """
-<<<<<<< HEAD
-        if not self.assertion.attribute_statement:
-            logger.debug("Missing Attribute Statement")
-            ava = {}
-        else:
-=======
         ava = {}
         if self.assertion.advice:
             if self.assertion.advice.assertion:
@@ -649,7 +643,6 @@ class AuthnResponse(StatusResponse):
                         assert len(tmp_assertion.attribute_statement) == 1
                         ava.update(self.read_attribute_statement(tmp_assertion.attribute_statement[0]))
         if self.assertion.attribute_statement:
->>>>>>> master
             assert len(self.assertion.attribute_statement) == 1
             _attr_statem = self.assertion.attribute_statement[0]
             ava.update(self.read_attribute_statement(_attr_statem))
@@ -875,12 +868,6 @@ class AuthnResponse(StatusResponse):
 
     def verify(self, key_file="", decrypt=True):
         """ Verify that the assertion is syntactically correct and
-<<<<<<< HEAD
-        the signature is correct if present."""
-        
-        if not self._verify():
-            return None
-=======
         the signature is correct if present.
         :param key_file: If not the default key file should be used this is it.
         """
@@ -893,7 +880,6 @@ class AuthnResponse(StatusResponse):
         else:
             if res is None:
                 return None
->>>>>>> master
 
         if not isinstance(self.response, samlp.Response):
             return self
