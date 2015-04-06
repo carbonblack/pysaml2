@@ -6,7 +6,7 @@ from pymongo.mongo_replica_set_client import MongoReplicaSetClient
 import pymongo.uri_parser
 import pymongo.errors
 from saml2.eptid import Eptid
-from saml2.mdstore import MetaData
+from saml2.mdstore import InMemoryMetaData
 from saml2.s_utils import PolicyError
 
 from saml2.ident import code, IdentDB, Unknown
@@ -153,7 +153,8 @@ class IdentMDB(IdentDB):
         self.mdb.store(ident, name_id=to_dict(name_id, ONTS.values(), True))
 
     def find_nameid(self, userid, nformat=None, sp_name_qualifier=None,
-                    name_qualifier=None, sp_provided_id=None):
+                    name_qualifier=None, sp_provided_id=None, **kwargs):
+        # reset passed for compatibility kwargs for next usage
         kwargs = {}
         if nformat:
             kwargs["name_format"] = nformat
@@ -376,9 +377,9 @@ def export_mdstore_to_mongo_db(mds, database, collection, sub_collection=""):
         mdb.store(key, **kwargs)
 
 
-class MetadataMDB(MetaData):
+class MetadataMDB(InMemoryMetaData):
     def __init__(self, onts, attrc, database="", collection=""):
-        MetaData.__init__(self, onts, attrc)
+        super(MetadataMDB, self).__init__(onts, attrc)
         self.mdb = MDB(database, collection)
         self.mdb.primary_key = "entity_id"
 

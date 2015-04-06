@@ -1039,8 +1039,8 @@ class IDPSSODescriptorType_(SSODescriptorType_):
     c_children['{urn:oasis:names:tc:SAML:2.0:assertion}Attribute'] = (
         'attribute', [saml.Attribute])
     c_cardinality['attribute'] = {"min": 0}
-    c_attributes['WantAuthnRequestsSigned'] = ('want_authn_requests_signed',
-                                               'boolean', False)
+    c_attributes['WantAuthnRequestsSigned'] = (
+        'want_authn_requests_signed', 'boolean', False)
     c_child_order.extend(['single_sign_on_service', 'name_id_mapping_service',
                           'assertion_id_request_service', 'attribute_profile',
                           'attribute'])
@@ -1069,6 +1069,7 @@ class IDPSSODescriptorType_(SSODescriptorType_):
                  text=None,
                  extension_elements=None,
                  extension_attributes=None,
+                 want_authn_requests_only_with_valid_cert=None,
     ):
         SSODescriptorType_.__init__(self,
                                     artifact_resolution_service=artifact_resolution_service,
@@ -1095,6 +1096,7 @@ class IDPSSODescriptorType_(SSODescriptorType_):
         self.attribute_profile = attribute_profile or []
         self.attribute = attribute or []
         self.want_authn_requests_signed = want_authn_requests_signed
+        self.want_authn_requests_only_with_valid_cert = want_authn_requests_only_with_valid_cert
 
 
 def idpsso_descriptor_type__from_string(xml_string):
@@ -2011,4 +2013,6 @@ ELEMENT_BY_TAG = {
 
 def factory(tag, **kwargs):
     return ELEMENT_BY_TAG[tag](**kwargs)
+
+
 

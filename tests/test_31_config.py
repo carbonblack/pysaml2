@@ -32,10 +32,11 @@ sp1 = {
     },
     "key_file": full_path("test.key"),
     "cert_file": full_path("test.pem"),
-    "metadata": {
-        "local": [full_path("metadata.xml"),
-                  full_path("urn-mace-swami.se-swamid-test-1.0-metadata.xml")],
-    },
+    "metadata": [{
+        "class": "saml2.mdstore.MetaDataFile",
+        "metadata": [(full_path("metadata.xml"), ),
+                  (full_path("urn-mace-swami.se-swamid-test-1.0-metadata.xml"), )],
+    }],
     "virtual_organization": {
         "coip": {
             "nameid_format": "urn:oasis:names:tc:SAML:2.0:nameid-format:transient",
@@ -238,7 +239,7 @@ def test_idp_1():
     assert c.endpoint("single_sign_on_service")[0] == 'http://localhost:8088/'
 
     attribute_restrictions = c.getattr("policy",
-                                       "idp").get_attribute_restriction("")
+                                       "idp").get_attribute_restrictions("")
     assert attribute_restrictions["edupersonaffiliation"][0].match("staff")
 
 
@@ -253,7 +254,7 @@ def test_idp_2():
                       BINDING_HTTP_REDIRECT) == ["http://localhost:8088/"]
 
     attribute_restrictions = c.getattr("policy",
-                                       "idp").get_attribute_restriction("")
+                                       "idp").get_attribute_restrictions("")
     assert attribute_restrictions["edupersonaffiliation"][0].match("staff")
 
 

@@ -1,3 +1,4 @@
+# coding=utf-8
 from saml2.authn_context import pword
 from saml2.mdie import to_dict
 from saml2 import md, assertion
@@ -74,7 +75,6 @@ def test_filter_on_attributes_1():
     ava = filter_on_attributes(ava, required)
     assert ava.keys() == ["serialNumber"]
     assert ava["serialNumber"] == ["12345"]
-
 
 # ----------------------------------------------------------------------
 
@@ -172,16 +172,61 @@ def test_ava_filter_2():
            "surName": "Jeter",
            "mail": "derek@example.com"}
 
-    raises(MissingValue, policy.filter, ava, 'urn:mace:umu.se:saml:roland:sp',
-           None, [mail], [gn, sn])
+    # mail removed because it doesn't match the regular expression
+    _ava =policy.filter(ava, 'urn:mace:umu.se:saml:roland:sp', None, [mail],
+                        [gn, sn])
+
+    assert _eq(_ava.keys(), ["givenName", "surName"])
 
     ava = {"givenName": "Derek",
            "surName": "Jeter"}
 
     # it wasn't there to begin with
-    raises(Exception, policy.filter, ava, 'urn:mace:umu.se:saml:roland:sp',
-           None, [gn, sn, mail])
+    try:
+        policy.filter(ava, 'urn:mace:umu.se:saml:roland:sp', None,
+                      [gn, sn, mail])
+    except MissingValue:
+        pass
 
+
+def test_ava_filter_dont_fail():
+    conf = {
+        "default": {
+            "lifetime": {"minutes": 15},
+            "attribute_restrictions": None,  # means all I have
+            "fail_on_missing_requested": False
+        },
+        "urn:mace:umu.se:saml:roland:sp": {
+            "lifetime": {"minutes": 5},
+            "attribute_restrictions": {
+                "givenName": None,
+                "surName": None,
+                "mail": [".*@.*\.umu\.se"],
+            },
+            "fail_on_missing_requested": False
+        }}
+
+    policy = Policy(conf)
+
+    ava = {"givenName": "Derek",
+           "surName": "Jeter",
+           "mail": "derek@example.com"}
+
+    # mail removed because it doesn't match the regular expression
+    # So it should fail if the 'fail_on_ ...' flag wasn't set
+    _ava = policy.filter(ava,'urn:mace:umu.se:saml:roland:sp', None,
+                         [mail], [gn, sn])
+
+    assert _ava
+
+    ava = {"givenName": "Derek",
+           "surName": "Jeter"}
+
+    # it wasn't there to begin with
+    _ava = policy.filter(ava, 'urn:mace:umu.se:saml:roland:sp',
+                         None, [gn, sn, mail])
+
+    assert _ava
 
 def test_filter_attribute_value_assertions_0(AVA):
     p = Policy({
@@ -193,7 +238,7 @@ def test_filter_attribute_value_assertions_0(AVA):
     })
 
     ava = filter_attribute_value_assertions(AVA[3].copy(),
-                                            p.get_attribute_restriction(""))
+                                            p.get_attribute_restrictions(""))
 
     print ava
     assert ava.keys() == ["surName"]
@@ -211,7 +256,7 @@ def test_filter_attribute_value_assertions_1(AVA):
     })
 
     ava = filter_attribute_value_assertions(AVA[0].copy(),
-                                            p.get_attribute_restriction(""))
+                                            p.get_attribute_restrictions(""))
 
     print ava
     assert _eq(ava.keys(), ["givenName", "surName"])
@@ -219,7 +264,7 @@ def test_filter_attribute_value_assertions_1(AVA):
     assert ava["givenName"] == ["Derek"]
 
     ava = filter_attribute_value_assertions(AVA[1].copy(),
-                                            p.get_attribute_restriction(""))
+                                            p.get_attribute_restrictions(""))
 
     print ava
     assert _eq(ava.keys(), ["surName"])
@@ -236,24 +281,25 @@ def test_filter_attribute_value_assertions_2(AVA):
     })
 
     ava = filter_attribute_value_assertions(AVA[0].copy(),
-                                            p.get_attribute_restriction(""))
+                                            p.get_attribute_restrictions(""))
 
     print ava
     assert _eq(ava.keys(), [])
 
     ava = filter_attribute_value_assertions(AVA[1].copy(),
-                                            p.get_attribute_restriction(""))
+                                            p.get_attribute_restrictions(""))
 
     print ava
     assert _eq(ava.keys(), ["givenName"])
     assert ava["givenName"] == ["Ryan"]
 
     ava = filter_attribute_value_assertions(AVA[3].copy(),
-                                            p.get_attribute_restriction(""))
+                                            p.get_attribute_restrictions(""))
 
     print ava
     assert _eq(ava.keys(), ["givenName"])
     assert ava["givenName"] == ["Roland"]
+
 
 # ----------------------------------------------------------------------------
 
@@ -290,7 +336,9 @@ def test_assertion_1(AVA):
 
 def test_assertion_2():
     AVA = {'mail': u'roland.hedberg@adm.umu.se',
-           'eduPersonTargetedID': 'http://lingon.ladok.umu.se:8090/idp!http://lingon.ladok.umu.se:8088/sp!95e9ae91dbe62d35198fbbd5e1fb0976',
+           'eduPersonTargetedID': 'http://lingon.ladok.umu'
+                                  '.se:8090/idp!http://lingon.ladok.umu'
+                                  '.se:8088/sp!95e9ae91dbe62d35198fbbd5e1fb0976',
            'displayName': u'Roland Hedberg',
            'uid': 'http://roland.hedberg.myopenid.com/'}
 
@@ -453,6 +501,7 @@ def test_filter_values_req_opt_2():
 
     raises(MissingValue, "filter_on_attributes(ava, r, o)")
 
+
 # ---------------------------------------------------------------------------
 
 
@@ -484,6 +533,7 @@ def test_filter_values_req_opt_4():
     print ava
     assert _eq(ava.keys(), ['givenName', 'sn'])
     assert ava == {'givenName': ['Roland'], 'sn': ['Hedberg']}
+
 
 # ---------------------------------------------------------------------------
 
@@ -706,7 +756,7 @@ ACD = pword.AuthenticationContextDeclaration(authn_method=authn_method)
 
 
 def test_assertion_with_noop_attribute_conv():
-    ava = {"urn:oid:2.5.4.4": "Roland", "urn:oid:2.5.4.42": "Hedberg" }
+    ava = {"urn:oid:2.5.4.4": "Roland", "urn:oid:2.5.4.42": "Hedberg"}
     ast = Assertion(ava)
     policy = Policy({
         "default": {
@@ -719,7 +769,7 @@ def test_assertion_with_noop_attribute_conv():
     issuer = Issuer(text="entityid", format=NAMEID_FORMAT_ENTITY)
     msg = ast.construct("sp_entity_id", "in_response_to", "consumer_url",
                         name_id, [AttributeConverterNOOP(NAME_FORMAT_URI)],
-                        policy, issuer=issuer, authn_decl=ACD ,
+                        policy, issuer=issuer, authn_decl=ACD,
                         authn_auth="authn_authn")
 
     print msg
@@ -767,12 +817,34 @@ def test_assertion_with_zero_attributes():
     issuer = Issuer(text="entityid", format=NAMEID_FORMAT_ENTITY)
     msg = ast.construct("sp_entity_id", "in_response_to", "consumer_url",
                         name_id, [AttributeConverterNOOP(NAME_FORMAT_URI)],
-                        policy, issuer=issuer, authn_decl=ACD ,
+                        policy, issuer=issuer, authn_decl=ACD,
                         authn_auth="authn_authn")
 
     print msg
     assert msg.attribute_statement == []
 
 
+def test_assertion_with_authn_instant():
+    ava = {}
+    ast = Assertion(ava)
+    policy = Policy({
+        "default": {
+            "lifetime": {"minutes": 240},
+            "attribute_restrictions": None,  # means all I have
+            "name_form": NAME_FORMAT_URI
+        },
+    })
+    name_id = NameID(format=NAMEID_FORMAT_TRANSIENT, text="foobar")
+    issuer = Issuer(text="entityid", format=NAMEID_FORMAT_ENTITY)
+    msg = ast.construct("sp_entity_id", "in_response_to", "consumer_url",
+                        name_id, [AttributeConverterNOOP(NAME_FORMAT_URI)],
+                        policy, issuer=issuer, authn_decl=ACD,
+                        authn_auth="authn_authn",
+                        authn_instant=1234567890)
+
+    print msg
+    assert msg.authn_statement[0].authn_instant == "2009-02-13T23:31:30Z"
+
+
 if __name__ == "__main__":
-    test_assertion_with_zero_attributes()
+    test_assertion_2()

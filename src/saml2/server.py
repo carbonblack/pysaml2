@@ -1,38 +1,28 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) 2009-2011 Umeå University
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#            http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
-"""Contains classes and functions that a SAML2.0 Identity provider (IdP) 
+"""Contains classes and functions that a SAML2.0 Identity provider (IdP)
 or attribute authority (AA) may use to conclude its tasks.
 """
 import logging
 import os
 
+import importlib
 import shelve
+import threading
 
-from saml2.eptid import EptidShelve, Eptid
-from saml2.sdb import SessionStorage
-from saml2.schema import soapenv
-
-from saml2.samlp import NameIDMappingResponse
-from saml2.entity import Entity
-
-from saml2 import saml, element_to_extension_element
+from saml2 import saml
+from saml2 import element_to_extension_element
 from saml2 import class_name
 from saml2 import BINDING_HTTP_REDIRECT
+
+from saml2.entity import Entity
+from saml2.eptid import Eptid
+from saml2.eptid import EptidShelve
+from saml2.samlp import NameIDMappingResponse
+from saml2.sdb import SessionStorage
+from saml2.schema import soapenv
 
 from saml2.request import AuthnRequest
 from saml2.request import AssertionIDRequest
@@ -43,21 +33,32 @@ from saml2.request import AuthnQuery
 
 from saml2.s_utils import MissingValue, Unknown, rndstr
 
-from saml2.sigver import pre_signature_part, signed_instance_factory
+from saml2.sigver import pre_signature_part
+from saml2.sigver import signed_instance_factory
+from saml2.sigver import CertificateError
 
 from saml2.assertion import Assertion
 from saml2.assertion import Policy
 from saml2.assertion import restriction_from_attribute_spec
 from saml2.assertion import filter_attribute_value_assertions
 
-from saml2.ident import IdentDB
+from saml2.ident import IdentDB, decode
 from saml2.profile import ecp
 
 logger = logging.getLogger(__name__)
 
+AUTHN_DICT_MAP = {
+    "decl": "authn_decl",
+    "authn_auth": "authn_auth",
+    "class_ref": "authn_class",
+    "authn_instant": "authn_instant",
+    "subject_locality": "subject_locality"
+}
+
 
 class Server(Entity):
     """ A class that does things that IdPs or AAs do """
+
     def __init__(self, config_file="", config=None, cache=None, stype="idp",
                  symkey=""):
         Entity.__init__(self, stype, config, config_file)
@@ -71,6 +72,12 @@ class Server(Entity):
         self.symkey = symkey
         self.seed = rndstr()
         self.iv = os.urandom(16)
+        self.lock = threading.Lock()
+
+    def getvalid_certificate_str(self):
+        if self.sec.cert_handler is not None:
+            return self.sec.cert_handler._last_validated_cert
+        return None
 
     def support_AssertionIDRequest(self):
         return True
@@ -89,18 +96,19 @@ class Server(Entity):
             typ, data = _spec
             if typ.lower() == "mongodb":
                 from saml2.mongo_store import SessionStorageMDB
+
                 return SessionStorageMDB(database=data, collection="session")
 
         raise NotImplementedError("No such storage type implemented")
 
     def init_config(self, stype="idp"):
-        """ Remaining init of the server configuration 
-        
+        """ Remaining init of the server configuration
+
         :param stype: The type of Server ("idp"/"aa")
         """
         if stype == "aa":
             return
-        
+
         # subject information is stored in a database
         # default database is in memory which is OK in some setups
         dbspec = self.config.getattr("subject_data", "idp")
@@ -117,14 +125,21 @@ class Server(Entity):
                 idb = shelve.open(addr, writeback=True)
             elif typ == "memcached":
                 import memcache
+
                 idb = memcache.Client(addr)
             elif typ == "dict":  # in-memory dictionary
                 idb = {}
             elif typ == "mongodb":
                 from saml2.mongo_store import IdentMDB
+
                 self.ident = IdentMDB(database=addr, collection="ident")
 
-        if typ == "mongodb":
+            elif typ == "identdb":
+                mod, clas = addr.rsplit('.', 1)
+                mod = importlib.import_module(mod)
+                self.ident = getattr(mod, clas)()
+
+        if typ == "mongodb" or typ == "identdb":
             pass
         elif idb is not None:
             self.ident = IdentDB(idb)
@@ -132,23 +147,32 @@ class Server(Entity):
             raise Exception("Couldn't open identity database: %s" %
                             (dbspec,))
 
-        self.ident.name_qualifier = self.config.entityid
+        try:
+            _domain = self.config.getattr("domain", "idp")
+            if _domain:
+                self.ident.domain = _domain
 
-        dbspec = self.config.getattr("edu_person_targeted_id", "idp")
-        if not dbspec:
-            pass
-        else:
-            typ = dbspec[0]
-            addr = dbspec[1]
-            secret = dbspec[2]
-            if typ == "shelve":
-                self.eptid = EptidShelve(secret, addr)
-            elif typ == "mongodb":
-                from saml2.mongo_store import EptidMDB
-                self.eptid = EptidMDB(secret, database=addr,
-                                      collection="eptid")
+            self.ident.name_qualifier = self.config.entityid
+
+            dbspec = self.config.getattr("edu_person_targeted_id", "idp")
+            if not dbspec:
+                pass
             else:
-                self.eptid = Eptid(secret)
+                typ = dbspec[0]
+                addr = dbspec[1]
+                secret = dbspec[2]
+                if typ == "shelve":
+                    self.eptid = EptidShelve(secret, addr)
+                elif typ == "mongodb":
+                    from saml2.mongo_store import EptidMDB
+
+                    self.eptid = EptidMDB(secret, database=addr,
+                                          collection="eptid")
+                else:
+                    self.eptid = Eptid(secret)
+        except Exception:
+            self.ident.close()
+            raise
 
     def wants(self, sp_entity_id, index=None):
         """ Returns what attributes the SP requires and which are optional
@@ -156,6 +180,8 @@ class Server(Entity):
 
         :param sp_entity_id: The entity id of the SP
         :param index: which of the attribute consumer services its all about
+            if index == None then all attribute consumer services are clumped
+            together.
         :return: 2-tuple, list of required and list of optional attributes
         """
         return self.metadata.attribute_requirement(sp_entity_id, index)
@@ -181,7 +207,7 @@ class Server(Entity):
     # -------------------------------------------------------------------------
     def parse_authn_request(self, enc_request, binding=BINDING_HTTP_REDIRECT):
         """Parse a Authentication Request
-        
+
         :param enc_request: The request in its transport format
         :param binding: Which binding that was used to transport the message
             to this entity.
@@ -197,7 +223,7 @@ class Server(Entity):
 
     def parse_attribute_query(self, xml_string, binding):
         """ Parse an attribute query
-        
+
         :param xml_string: The Attribute Query as an XML string
         :param binding: Which binding that was used for the request
         :return: A query instance
@@ -254,12 +280,52 @@ class Server(Entity):
 
     # ------------------------------------------------------------------------
 
+    def setup_assertion(self, authn, sp_entity_id, in_response_to, consumer_url, name_id, policy, _issuer,
+                        authn_statement, identity, best_effort, sign_response, add_subject=True):
+        ast = Assertion(identity)
+        ast.acs = self.config.getattr("attribute_converters", "idp")
+        if policy is None:
+            policy = Policy()
+        try:
+            ast.apply_policy(sp_entity_id, policy, self.metadata)
+        except MissingValue, exc:
+            if not best_effort:
+                return self.create_error_response(in_response_to, consumer_url,
+                                                  exc, sign_response)
+
+        if authn:  # expected to be a dictionary
+            # Would like to use dict comprehension but ...
+            authn_args = dict([
+                (AUTHN_DICT_MAP[k], v) for k, v in authn.items()
+                if k in AUTHN_DICT_MAP])
+
+            assertion = ast.construct(sp_entity_id, in_response_to,
+                                      consumer_url, name_id,
+                                      self.config.attribute_converters,
+                                      policy, issuer=_issuer, add_subject=add_subject,
+                                      **authn_args)
+        elif authn_statement:  # Got a complete AuthnStatement
+            assertion = ast.construct(sp_entity_id, in_response_to,
+                                      consumer_url, name_id,
+                                      self.config.attribute_converters,
+                                      policy, issuer=_issuer,
+                                      authn_statem=authn_statement, add_subject=add_subject)
+        else:
+            assertion = ast.construct(sp_entity_id, in_response_to,
+                                      consumer_url, name_id,
+                                      self.config.attribute_converters,
+                                      policy, issuer=_issuer, add_subject=add_subject)
+        return assertion
+
     def _authn_response(self, in_response_to, consumer_url,
                         sp_entity_id, identity=None, name_id=None,
                         status=None, authn=None, issuer=None, policy=None,
-                        sign_assertion=False, sign_response=False):
+                        sign_assertion=False, sign_response=False,
+                        best_effort=False, encrypt_assertion=False,
+                        encrypt_cert=None, authn_statement=None,
+                        encrypt_assertion_self_contained=False, encrypted_advice_attributes=False):
         """ Create a response. A layer of indirection.
-        
+
         :param in_response_to: The session identifier of the request
         :param consumer_url: The URL which should receive the response
         :param sp_entity_id: The entity identifier of the SP
@@ -272,64 +338,71 @@ class Server(Entity):
         :param issuer: The issuer of the response
         :param sign_assertion: Whether the assertion should be signed or not
         :param sign_response: Whether the response should be signed or not
+        :param best_effort: Even if not the SPs demands can be met send a
+            response.
         :return: A response instance
         """
 
         to_sign = []
         args = {}
-        if identity:
-            _issuer = self._issuer(issuer)
-            ast = Assertion(identity)
-            if policy is None:
-                policy = Policy()
-            try:
-                ast.apply_policy(sp_entity_id, policy, self.metadata)
-            except MissingValue, exc:
-                return self.create_error_response(in_response_to, consumer_url,
-                                                  exc, sign_response)
+        #if identity:
+        _issuer = self._issuer(issuer)
 
-            if authn:  # expected to be a dictionary
-                if "decl" in authn:
-                    assertion = ast.construct(sp_entity_id, in_response_to,
-                                              consumer_url, name_id,
-                                              self.config.attribute_converters,
-                                              policy, issuer=_issuer,
-                                              authn_decl=authn["decl"],
-                                              authn_auth=authn["authn_auth"])
-                else:
-                    assertion = ast.construct(sp_entity_id, in_response_to,
-                                              consumer_url, name_id,
-                                              self.config.attribute_converters,
-                                              policy, issuer=_issuer,
-                                              authn_class=authn["class_ref"],
-                                              authn_auth=authn["authn_auth"])
-            else:
-                assertion = ast.construct(sp_entity_id, in_response_to,
-                                          consumer_url, name_id,
-                                          self.config.attribute_converters,
-                                          policy, issuer=_issuer)
+        #if encrypt_assertion and show_nameid:
+        #    tmp_name_id = name_id
+        #    name_id = None
+        #    name_id = None
+        #    tmp_authn = authn
+        #    authn = None
+        #    tmp_authn_statement = authn_statement
+        #    authn_statement = None
 
-            if sign_assertion:
-                assertion.signature = pre_signature_part(assertion.id,
-                                                         self.sec.my_cert, 1)
-                # Just the assertion or the response and the assertion ?
-                to_sign = [(class_name(assertion), assertion.id)]
+        if encrypt_assertion and encrypted_advice_attributes:
+            assertion_attributes = self.setup_assertion(None, sp_entity_id, None, None, None, policy,
+                                             None, None, identity, best_effort, sign_response, False)
+            assertion = self.setup_assertion(authn, sp_entity_id, in_response_to, consumer_url,
+                                                         name_id, policy, _issuer, authn_statement, [], True,
+                                                         sign_response)
+            assertion.advice = saml.Advice()
 
-            # Store which assertion that has been sent to which SP about which
-            # subject.
+            #assertion.advice.assertion_id_ref.append(saml.AssertionIDRef())
+            #assertion.advice.assertion_uri_ref.append(saml.AssertionURIRef())
+            assertion.advice.assertion.append(assertion_attributes)
+        else:
+            assertion = self.setup_assertion(authn, sp_entity_id, in_response_to, consumer_url,
+                                                         name_id, policy, _issuer, authn_statement, identity, True,
+                                                         sign_response)
 
-            # self.cache.set(assertion.subject.name_id.text,
-            #                 sp_entity_id, {"ava": identity, "authn": authn},
-            #                 assertion.conditions.not_on_or_after)
+        to_sign = []
+        if sign_assertion is not None and sign_assertion:
+            if assertion.advice and assertion.advice.assertion:
+                for tmp_assertion in assertion.advice.assertion:
+                    tmp_assertion.signature = pre_signature_part(tmp_assertion.id, self.sec.my_cert, 1)
+                    to_sign.append((class_name(tmp_assertion), tmp_assertion.id))
+            assertion.signature = pre_signature_part(assertion.id,
+                                                     self.sec.my_cert, 1)
+            # Just the assertion or the response and the assertion ?
+            to_sign.append((class_name(assertion), assertion.id))
 
-            args["assertion"] = assertion
 
-            if self.support_AssertionIDRequest() or self.support_AuthnQuery():
-                self.session_db.store_assertion(assertion, to_sign)
+        # Store which assertion that has been sent to which SP about which
+        # subject.
+
+        # self.cache.set(assertion.subject.name_id.text,
+        #                 sp_entity_id, {"ava": identity, "authn": authn},
+        #                 assertion.conditions.not_on_or_after)
+
+        args["assertion"] = assertion
+
+        if (self.support_AssertionIDRequest() or self.support_AuthnQuery()):
+            self.session_db.store_assertion(assertion, to_sign)
 
         return self._response(in_response_to, consumer_url, status, issuer,
-                              sign_response, to_sign, **args)
-                        
+                              sign_response, to_sign, encrypt_assertion=encrypt_assertion,
+                              encrypt_cert=encrypt_cert,
+                              encrypt_assertion_self_contained=encrypt_assertion_self_contained,
+                              encrypted_advice_attributes=encrypted_advice_attributes, **args)
+
     # ------------------------------------------------------------------------
 
     #noinspection PyUnusedLocal
@@ -339,7 +412,7 @@ class Server(Entity):
                                   sign_assertion=False, sign_response=False,
                                   attributes=None, **kwargs):
         """ Create an attribute assertion response.
-        
+
         :param identity: A dictionary with attributes and values that are
             expected to be the bases for the assertion in the response.
         :param in_response_to: The session identifier of the request
@@ -401,7 +474,10 @@ class Server(Entity):
     def create_authn_response(self, identity, in_response_to, destination,
                               sp_entity_id, name_id_policy=None, userid=None,
                               name_id=None, authn=None, issuer=None,
-                              sign_response=False, sign_assertion=False,
+                              sign_response=None, sign_assertion=None,
+                              encrypt_cert=None, encrypt_assertion=None,
+                              encrypt_assertion_self_contained=False,
+                              encrypted_advice_attributes=False,
                               **kwargs):
         """ Constructs an AuthenticationResponse
 
@@ -420,7 +496,42 @@ class Server(Entity):
         :return: A response instance
         """
 
-        policy = self.config.getattr("policy", "idp")
+        try:
+            policy = kwargs["release_policy"]
+        except KeyError:
+            policy = self.config.getattr("policy", "idp")
+
+        try:
+            best_effort = kwargs["best_effort"]
+        except KeyError:
+            best_effort = False
+
+        if sign_assertion is None:
+            sign_assertion = self.config.getattr("sign_assertion", "idp")
+        if sign_assertion is None:
+            sign_assertion = False
+
+        if sign_response is None:
+            sign_response = self.config.getattr("sign_response", "idp")
+        if sign_response is None:
+            sign_response = False
+
+        if encrypt_assertion is None:
+            encrypt_assertion = self.config.getattr("encrypt_assertion", "idp")
+        if encrypt_assertion is None:
+            encrypt_assertion = False
+
+        if encrypt_assertion:
+            if encrypt_cert is not None:
+                verify_encrypt_cert = self.config.getattr("verify_encrypt_cert", "idp")
+                if verify_encrypt_cert is not None:
+                    if not verify_encrypt_cert(encrypt_cert):
+                        raise CertificateError("Invalid certificate for encryption!")
+            else:
+                raise CertificateError("No SPCertEncType certificate for encryption contained in authentication "
+                                       "request.")
+        else:
+            encrypt_assertion = False
 
         if not name_id:
             try:
@@ -437,7 +548,14 @@ class Server(Entity):
                 if not snq:
                     snq = sp_entity_id
 
-                _nids = self.ident.find_nameid(userid, sp_name_qualifier=snq)
+                kwa = {"sp_name_qualifier": snq}
+
+                try:
+                    kwa["format"] = name_id_policy.format
+                except AttributeError:
+                    pass
+
+                _nids = self.ident.find_nameid(userid, **kwa)
                 # either none or one
                 if _nids:
                     name_id = _nids[0]
@@ -445,6 +563,8 @@ class Server(Entity):
                     name_id = self.ident.construct_nameid(userid, policy,
                                                           sp_entity_id,
                                                           name_id_policy)
+                    logger.debug("construct_nameid: %s => %s" % (userid,
+                                                                 name_id))
             except IOError, exc:
                 response = self.create_error_response(in_response_to,
                                                       destination,
@@ -454,17 +574,39 @@ class Server(Entity):
 
         try:
             _authn = authn
-
+            if (sign_assertion or sign_response) and self.sec.cert_handler.generate_cert():
+                with self.lock:
+                    self.sec.cert_handler.update_cert(True)
+                    return self._authn_response(in_response_to,  # in_response_to
+                                                destination,  # consumer_url
+                                                sp_entity_id,  # sp_entity_id
+                                                identity,  # identity as dictionary
+                                                name_id,
+                                                authn=_authn,
+                                                issuer=issuer,
+                                                policy=policy,
+                                                sign_assertion=sign_assertion,
+                                                sign_response=sign_response,
+                                                best_effort=best_effort,
+                                                encrypt_assertion=encrypt_assertion,
+                                                encrypt_assertion_self_contained=encrypt_assertion_self_contained,
+                                                encrypted_advice_attributes=encrypted_advice_attributes,
+                                                encrypt_cert=encrypt_cert)
             return self._authn_response(in_response_to,  # in_response_to
-                                        destination,     # consumer_url
-                                        sp_entity_id,    # sp_entity_id
-                                        identity,       # identity as dictionary
+                                        destination,  # consumer_url
+                                        sp_entity_id,  # sp_entity_id
+                                        identity,  # identity as dictionary
                                         name_id,
                                         authn=_authn,
                                         issuer=issuer,
                                         policy=policy,
                                         sign_assertion=sign_assertion,
-                                        sign_response=sign_response)
+                                        sign_response=sign_response,
+                                        best_effort=best_effort,
+                                        encrypt_assertion=encrypt_assertion,
+                                        encrypt_assertion_self_contained=encrypt_assertion_self_contained,
+                                        encrypted_advice_attributes=encrypted_advice_attributes,
+                                        encrypt_cert=encrypt_cert)
 
         except MissingValue, exc:
             return self.create_error_response(in_response_to, destination,
@@ -553,7 +695,6 @@ class Server(Entity):
         asserts = []
         for statement in self.session_db.get_authn_statements(
                 subject.name_id, session_index, requested_context):
-
             asserts.append(saml.Assertion(authn_statement=statement,
                                           subject=subject, **margs))
 
@@ -600,3 +741,30 @@ class Server(Entity):
         soap_envelope = soapenv.Envelope(header=header, body=body)
 
         return "%s" % soap_envelope
+
+    def close(self):
+        self.ident.close()
+
+    def clean_out_user(self, name_id):
+        """
+        Remove all authentication statements that belongs to a user identified
+        by a NameID instance
+
+        :param name_id: NameID instance
+        :return: The local identifier for the user
+        """
+
+        lid = self.ident.find_local_id(name_id)
+        logger.info("Clean out %s" % lid)
+
+        # remove the authentications
+        try:
+            for _nid in [decode(x) for x in self.ident.db[lid].split(" ")]:
+                try:
+                    self.session_db.remove_authn_statements(_nid)
+                except KeyError:
+                    pass
+        except KeyError:
+            pass
+
+        return lid
