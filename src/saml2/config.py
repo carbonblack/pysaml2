@@ -188,7 +188,7 @@ class Config(object):
         self.cert_file = None
         self.encryption_type = 'both'
         self.secret = None
-        self.accepted_time_diff = None
+        self.accepted_time_diff = 600
         self.name = None
         self.ca_certs = None
         self.verify_ssl_cert = False
@@ -215,7 +215,7 @@ class Config(object):
         self.entity_category = ""
         self.crypto_backend = 'xmlsec1'
         self.scope = ""
-        self.allow_unknown_attributes = False
+        self.allow_unknown_attributes = True
         self.allow_unsolicited = False
         self.extension_schema = {}
         self.cert_handler_extra_class = None
